@@ -1,0 +1,305 @@
+<!doctype html>
+<html>
+<head>
+<script>
+var randint = function(min, max) { return Math.floor(Math.random() * (max - min)) + min; };
+var get_distance = function(x1, y1, x2, y2) { return Math.sqrt((x2-x1)*(x2-x1) + (y2-y1)*(y2-y1)); }
+
+function find_closest_target(obj, targets) {
+	if (targets.length === 0) return null;
+	
+	return targets.map(function(t) {
+		return {
+			"target": t,
+			"distance": get_distance(obj.x, obj.y, t.x, t.y)
+		};
+	}).sort(function(a, b) {
+		return a.distance - b.distance;
+	})[0].target;
+}
+
+var canvas, context, user, camera, map;
+
+var Camera = function(target) {
+	this.x = target.x;
+	this.y = target.y;
+	this.velx = 0;
+	this.vely = 0;
+	this.acc = 0;
+	this.offsetx = 0;
+	this.offsety = 0;
+	this.target = target;	
+};
+
+Camera.prototype.loop = function() {
+	this.offsetx = this.x - 320;
+	this.offsety = this.y - 240;
+	
+	camera.move();
+};
+
+Camera.prototype.move = function() {
+	var radians = Math.atan2(this.target.y-this.y, this.target.x-this.x);
+	
+	var distance = get_distance(this.x, this.y, this.target.x, this.target.y);
+	if (distance < 200) {
+		this.velx *= 0.99;
+		this.vely *= 0.99;
+	}
+	else {
+		this.velx += Math.cos(radians) * distance / 100;
+		this.vely += Math.sin(radians) * distance / 100;
+	}
+	
+	if (Math.abs(this.velx) > this.target.velx) this.velx = this.target.velx;
+	if (Math.abs(this.vely) > this.target.vely) this.vely = this.target.vely;
+	
+	this.x += this.velx;
+	this.y += this.vely;
+
+	if (this.x < 0) this.x = 0;
+	if (this.y < 0) this.y = 0;
+	if (this.x >= 4096) this.x = 4096;
+	if (this.y >= 4096) this.y = 4096;
+
+	this.distance = distance;
+	
+	
+};
+
+Camera.prototype.draw = function(ctx) {
+	context.fillStyle = "rgb(255,255,255)";
+	context.font = "32px Arial";
+	//context.fillText("distance: " + this.distance, 20, 50);
+	//context.fillText("acc: " + this.acc, 20, 90);
+};
+
+var Tree = function() {
+	this._id = "t" + randint(1000000, 10000000);
+	this.type = "tree";
+	this.x = randint(0, 4096);
+	this.y = randint(0, 4096);
+	this.size = 0;
+	this.color = "rgb(0,255,0)";
+	this.nuts = 0;
+	this.owner = null;
+};
+
+Tree.prototype.draw = function(ctx, offsetx, offsety) {
+	var dx = this.x - offsetx;
+	var dy = this.y - offsety;
+	
+	ctx.fillStyle = this.color;
+	ctx.font = "100px Arial";
+	ctx.fillText("T", dx, dy);
+};
+
+var Unit = function(subtype) {
+	this.type = "unit";
+	this.subtype = subtype;
+	//this.ai = "scavenge";
+	this.safe = false;
+	this.x = randint(0, 4096);
+	this.y = randint(0, 4096);
+	this.acc = 0;
+	this.color = "rgb(0,0,255)";
+	this.hp = 100;
+	this.hpmax = 100;
+	this.str = 5;
+	this.agl = randint(10,60);
+	this.dex = 5;
+	this.def = 5;
+	this.exp = 0;
+	this.at = 100;
+	this.nuts = 0;
+	this.target = null;
+	this.attacker = null;
+	this.trees = {};
+};
+
+Unit.prototype.loop = function(units, nuts, trees) {
+	if (this.target && !this.target.safe) {	
+		var distance = get_distance(this.x, this.y, this.target.x, this.target.y);
+		
+		if (distance < 20) {
+			if (this.target.type === "nut") {
+				this.target.claimed = true;
+				this.nuts++;
+				this.target = null;
+			}
+			else if (this.target.type === "unit") {
+				this.target.attacker = this;
+				if (this.at >= 100) {
+					this.target.hp--;
+					this.at = 0;
+				}
+			}
+			else if (this.target.type === "tree") {
+				//claim_tree(this, this.target); //change color of tree to match sq
+				this.trees[this.target._id] = this.target;
+				this.safe = true;
+				this.target.nuts += this.nuts;
+				this.nuts = 0;
+				this.target = null;
+			}
+			this.acc = 0;
+		}
+		else
+			if (this.acc < this.agl / 10) this.acc += 0.2;
+			
+		if (this.acc > 0) this.move();
+	}
+	else
+		if (this.subtype === "squirrel") {
+			if (this.max_weight())
+				this.target = find_closest_target(this, trees);
+			else
+				this.target = find_closest_target(this, nuts);
+			
+			this.safe = false;
+		}
+		else if (this.subtype === "wolf") {
+			this.target = find_closest_target(this, units.filter(function(u) {
+				return u.subtype === "squirrel" && !u.safe;
+			}));
+		}
+	
+	if (this.attacker) {
+		if (this.subtype === "squirrel" && this.attacker.subtype === "wolf") {
+			if (this.safe && get_distance(this.x, this.y, this.attacker.x, this.attacker.y) > 500) {
+				this.target = null;
+				this.attacker = null;
+			}
+			else
+				this.target = find_closest_target(this, trees);
+		}
+	}
+	
+	if (this.at < 100) this.at++;
+};
+
+Unit.prototype.move = function() { //todo: create move_towards_target(obj, target) function
+	var radians = Math.atan2(this.target.y-this.y, this.target.x-this.x);
+	
+	var velx = Math.cos(radians) * this.acc;
+	var vely = Math.sin(radians) * this.acc;
+	this.x += velx;
+	this.y += vely;
+};
+
+Unit.prototype.max_weight = function() {
+	return this.nuts >= this.str;	
+};
+
+Unit.prototype.draw = function(ctx, offsetx, offsety) {
+	var dx = this.x - offsetx;
+	var dy = this.y - offsety;
+	
+	ctx.fillStyle = this.color;
+	ctx.font = "48px Arial";
+	ctx.fillText(this.subtype[0], dx, dy);
+};
+
+var Nut = function() {
+	this.type = "nut";
+	this.x = randint(0, 4096);
+	this.y = randint(0, 4096);
+	this.color = "rgb(150, 100, 50)";
+	this.weight = 1;
+	this.claimed = false;
+};
+
+Nut.prototype.draw = function(ctx, offsetx, offsety) {
+	var dx = this.x - offsetx;
+	var dy = this.y - offsety;
+	
+	ctx.fillStyle = this.color;
+	ctx.font = "24px Arial";
+	ctx.fillText("n", dx, dy);
+};
+
+var Map = function(user) {
+	this.width = 4096;
+	this.height = 4096;
+	this.nuts = [];
+	this.trees = [];
+	this.units = [user];
+	this.objects = [];
+	this.lasttick = 0;
+
+	for (var i=0; i<100; i++)
+		this.nuts.push(new Nut());
+
+	for (var i=0; i<100; i++)
+		this.trees.push(new Tree());
+};
+
+Map.prototype.loop = function() {
+	camera.loop();
+
+	if (map.nuts.length < 100)
+		map.nuts.push(new Nut());
+	
+	if (map.units.length < 10) {
+		map.units.push(new Unit("squirrel"));
+		map.units.push(new Unit("wolf"));
+	}
+		
+	
+	this.units.forEach(function(u) { //todo: change to objects array?
+		u.loop(this.units, this.nuts, this.trees);
+	}, this);
+	
+	this.nuts = this.nuts.filter(function(nut) {
+		return !nut.claimed;
+	});
+	
+	this.objects = this.units.concat(this.nuts, this.trees);
+	this.lasttick = Date.now();
+};
+
+Map.prototype.draw = function(ctx) {
+	this.objects.forEach(function(o) {
+		o.draw(ctx, camera.offsetx, camera.offsety);
+	});
+};
+
+function loop() {
+	if (Date.now() > map.lasttick + 1)
+		map.loop();
+	
+	draw();
+	requestAnimationFrame(loop);
+}
+
+function draw() {
+	context.fillStyle = "rgb(25,150,75)";
+	context.fillRect(0,0,640,480);
+	
+	map.draw(context);
+	
+	context.fillStyle = "rgb(255,255,255)";
+	context.font = "32px Arial";
+	context.fillText("HP: " + user.hp + "/" + user.hpmax + " | Nuts: " + user.nuts + "/" + user.str, 20, 20);
+	
+	camera.draw(context);
+}
+
+window.onload = function() {
+	canvas = document.getElementById("canvas");
+	context = canvas.getContext("2d");
+	context.textBaseline = "top";
+	
+	user = new Unit("squirrel");
+	camera = new Camera(user);
+	map = new Map(user);
+	
+	requestAnimationFrame(loop);
+};
+
+</script>
+</head>
+<body>
+<canvas id="canvas" width="640" height="480"></canvas>
+</body>
+</html>
