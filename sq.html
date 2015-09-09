@@ -1,6 +1,8 @@
 <!doctype html>
 <html>
 <head>
+<script src="templates.js"></script>
+<script src="color.js"></script>
 <script>
 var randint = function(min, max) { return Math.floor(Math.random() * (max - min)) + min; };
 var get_distance = function(x1, y1, x2, y2) { return Math.sqrt((x2-x1)*(x2-x1) + (y2-y1)*(y2-y1)); }
@@ -18,14 +20,63 @@ function find_closest_target(obj, targets) {
 	})[0].target;
 }
 
-var canvas, context, user, camera, map;
+function draw_text(ctx, text, x, y, font, color) {
+	ctx.strokeStyle = "rgb(0,0,0)";
+	ctx.lineWidth = 1;
+	ctx.font = font;
+	ctx.strokeText(text, x, y);
+	ctx.fillStyle = color;
+	ctx.fillText(text, x, y);
+}
+
+var canvas, context, user, camera, map, buttons, damages;
+
+var Rect = function(x, y, w, h) {
+	this.x = x;
+	this.y = y;
+	this.w = w;
+	this.h = h;
+};
+
+Rect.prototype.hit = function(x, y) {
+	return x >= this.x && x < this.x + this.w && y >= this.y && y < this.y + this.h;
+};
+
+var Damage = function(type, val, obj) {
+	this.type = type;
+	this.val = val;
+	this.text = "" + val;
+	this.x = obj.x;
+	this.y = obj.y;
+	this.maxy = obj.y;
+	this.velx = [-1,1][randint(0,2)];
+	this.vely = -2;
+	this.acc = 0.1;
+	this.life = 100;
+	this.color = new Color(255,255,255,1.0);
+};
+
+Damage.prototype.loop = function() {
+	this.vely += this.acc;
+	
+	this.x += this.velx;
+	this.y += this.vely;
+	
+	if (this.y >= this.maxy) this.vely = -this.vely;
+	
+	this.life--;
+	this.color.edit("a", this.life/100);
+};
+
+Damage.prototype.draw = function(ctx, offsetx, offsety) {
+	context.fillStyle = this.color.get_color_string();
+	context.font = "24px Arial";
+	context.fillText(this.text, this.x - offsetx, this.y - offsety);
+};
 
 var Camera = function(target) {
 	this.x = target.x;
 	this.y = target.y;
-	this.velx = 0;
-	this.vely = 0;
-	this.acc = 0;
 	this.offsetx = 0;
 	this.offsety = 0;
 	this.target = target;	
@@ -39,32 +90,13 @@ Camera.prototype.loop = function() {
 };
 
 Camera.prototype.move = function() {
-	var radians = Math.atan2(this.target.y-this.y, this.target.x-this.x);
-	
-	var distance = get_distance(this.x, this.y, this.target.x, this.target.y);
-	if (distance < 200) {
-		this.velx *= 0.99;
-		this.vely *= 0.99;
-	}
-	else {
-		this.velx += Math.cos(radians) * distance / 100;
-		this.vely += Math.sin(radians) * distance / 100;
-	}
-	
-	if (Math.abs(this.velx) > this.target.velx) this.velx = this.target.velx;
-	if (Math.abs(this.vely) > this.target.vely) this.vely = this.target.vely;
-	
-	this.x += this.velx;
-	this.y += this.vely;
+	this.x += (this.target.x - this.x) / 16;
+	this.y += (this.target.y - this.y) / 16;
 
 	if (this.x < 0) this.x = 0;
 	if (this.y < 0) this.y = 0;
 	if (this.x >= 4096) this.x = 4096;
 	if (this.y >= 4096) this.y = 4096;
-
-	this.distance = distance;
-	
-	
 };
 
 Camera.prototype.draw = function(ctx) {
@@ -80,7 +112,7 @@ var Tree = function() {
 	this.x = randint(0, 4096);
 	this.y = randint(0, 4096);
 	this.size = 0;
-	this.color = "rgb(0,255,0)";
+	this.color = new Color(0,randint(50,256),0,1.0);
 	this.nuts = 0;
 	this.owner = null;
 };
@@ -89,9 +121,7 @@ Tree.prototype.draw = function(ctx, offsetx, offsety) {
 	var dx = this.x - offsetx;
 	var dy = this.y - offsety;
 	
-	ctx.fillStyle = this.color;
-	ctx.font = "100px Arial";
-	ctx.fillText("T", dx, dy);
+	draw_text(ctx, "T", dx, dy, "100px Arial", this.color.get_color_string());
 };
 
 var Unit = function(subtype) {
@@ -102,7 +132,7 @@ var Unit = function(subtype) {
 	this.x = randint(0, 4096);
 	this.y = randint(0, 4096);
 	this.acc = 0;
-	this.color = "rgb(0,0,255)";
+	this.color = new Color(randint(0,256), randint(0,256), randint(0,256), 1.0);
 	this.hp = 100;
 	this.hpmax = 100;
 	this.str = 5;
@@ -117,20 +147,23 @@ var Unit = function(subtype) {
 	this.trees = {};
 };
 
-Unit.prototype.loop = function(units, nuts, trees) {
+Unit.prototype.loop = function(units, nuts, trees) {	
+	if (this.target && this.target.claimed) this.target = null;
+	
 	if (this.target && !this.target.safe) {	
 		var distance = get_distance(this.x, this.y, this.target.x, this.target.y);
 		
 		if (distance < 20) {
-			if (this.target.type === "nut") {
+			if (this.target.type === "nut") { //collect nut
 				this.target.claimed = true;
 				this.nuts++;
 				this.target = null;
+				create_damage("nut", "found a nut", this);
 			}
 			else if (this.target.type === "unit") {
 				this.target.attacker = this;
 				if (this.at >= 100) {
-					this.target.hp--;
+					this.target.apply_damage(1);
 					this.at = 0;
 				}
 			}
@@ -149,7 +182,7 @@ Unit.prototype.loop = function(units, nuts, trees) {
 			
 		if (this.acc > 0) this.move();
 	}
-	else
+	else {
 		if (this.subtype === "squirrel") {
 			if (this.max_weight())
 				this.target = find_closest_target(this, trees);
@@ -163,6 +196,7 @@ Unit.prototype.loop = function(units, nuts, trees) {
 				return u.subtype === "squirrel" && !u.safe;
 			}));
 		}
+	}
 	
 	if (this.attacker) {
 		if (this.subtype === "squirrel" && this.attacker.subtype === "wolf") {
@@ -187,6 +221,30 @@ Unit.prototype.move = function() { //todo: create move_towards_target(obj, targe
 	this.y += vely;
 };
 
+Unit.prototype.eat_nut = function() {
+	if (this.nuts > 0) {
+		this.nuts--;
+		this.heal(100);
+		return true;
+	}
+	return false;
+};
+
+Unit.prototype.apply_damage = function(amount) {
+	this.hp -= amount;
+	if (this.hp <= 0) {
+		this.hp = 0;
+		//dead
+	}
+	create_damage("hurt", amount, this);	
+};
+
+Unit.prototype.heal = function(amount) {
+	this.hp += amount;
+	if (this.hp > this.hpmax) this.hp = this.hpmax;
+	create_damage("heal", amount, this);
+};
+
 Unit.prototype.max_weight = function() {
 	return this.nuts >= this.str;	
 };
@@ -195,16 +253,14 @@ Unit.prototype.draw = function(ctx, offsetx, offsety) {
 	var dx = this.x - offsetx;
 	var dy = this.y - offsety;
 	
-	ctx.fillStyle = this.color;
-	ctx.font = "48px Arial";
-	ctx.fillText(this.subtype[0], dx, dy);
+	draw_text(ctx, this.subtype[0], dx, dy, "48px Arial", this.color.get_color_string());
 };
 
 var Nut = function() {
 	this.type = "nut";
 	this.x = randint(0, 4096);
 	this.y = randint(0, 4096);
-	this.color = "rgb(150, 100, 50)";
+	this.color = new Color(156, 100, 50, 1.0);
 	this.weight = 1;
 	this.claimed = false;
 };
@@ -213,9 +269,30 @@ Nut.prototype.draw = function(ctx, offsetx, offsety) {
 	var dx = this.x - offsetx;
 	var dy = this.y - offsety;
 	
-	ctx.fillStyle = this.color;
-	ctx.font = "24px Arial";
-	ctx.fillText("n", dx, dy);
+	draw_text(ctx, "n", dx, dy, "24px Arial", this.color.get_color_string());
+};
+
+var Button = function(text, rect, fn) {
+	this.text = text;
+	this.rect = rect;
+	this.fn = fn;
+	this.color = new Color(0,0,200,0.75);
+	this.fontcolor = new Color(255,255,255,1.0);
+};
+
+Button.prototype.mouse_down = function(mx, my) {
+	if (this.rect.hit(mx, my)) {
+		this.fn();
+		return true;
+	}
+	return false;
+};
+
+Button.prototype.draw = function(ctx) {
+	ctx.fillStyle = this.color.get_color_string();
+	ctx.fillRect(this.rect.x, this.rect.y, this.rect.w, this.rect.h);
+
+	draw_text(ctx, this.text, this.rect.x, this.rect.y, "32px Arial", this.fontcolor.get_color_string());
 };
 
 var Map = function(user) {
@@ -268,8 +345,31 @@ function loop() {
 	if (Date.now() > map.lasttick + 1)
 		map.loop();
 	
+	damages = damages.filter(function(d) {
+		return d.life > 0;
+	});
+	
+	damages.forEach(function(d) {
+		d.loop()	
+	});
+	
 	draw();
 	requestAnimationFrame(loop);
+}
+
+function mouse_down(e) {
+	var mx = e.offsetX;
+	var my = e.offsetY;
+	
+	if (!buttons.some(function(b) {
+		return b.mouse_down(mx, my);
+	})) {
+		console.log("click");
+	}
+}
+
+function create_damage(type, val, obj) {
+	damages.push(new Damage("nut", val, obj));
 }
 
 function draw() {
@@ -278,9 +378,16 @@ function draw() {
 	
 	map.draw(context);
 	
-	context.fillStyle = "rgb(255,255,255)";
-	context.font = "32px Arial";
-	context.fillText("HP: " + user.hp + "/" + user.hpmax + " | Nuts: " + user.nuts + "/" + user.str, 20, 20);
+	buttons.forEach(function(b) {
+		b.draw(context);
+	});
+	
+	damages.forEach(function(d) {
+		d.draw(context, camera.offsetx, camera.offsety);
+	});
+	
+	var text = "HP: " + user.hp + "/" + user.hpmax + " | Nuts: " + user.nuts + "/" + user.str;
+	draw_text(context, text, 20, 20, "32px Arial", "rgb(255,255,255)");
 	
 	camera.draw(context);
 }
@@ -289,10 +396,18 @@ window.onload = function() {
 	canvas = document.getElementById("canvas");
 	context = canvas.getContext("2d");
 	context.textBaseline = "top";
+	canvas.onmousedown = mouse_down;
 	
 	user = new Unit("squirrel");
 	camera = new Camera(user);
 	map = new Map(user);
+	
+	buttons = [];
+	buttons.push(new Button("Eat Nut", new Rect(500, 20, 200, 50), function() {
+		user.eat_nut();
+	}));
+	
+	damages = [];
 	
 	requestAnimationFrame(loop);
 };
